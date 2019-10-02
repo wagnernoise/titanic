@@ -1,0 +1,347 @@
+---
+title: "Titanic"
+output: html_notebook
+---
+
+This is a data analysis using the data set from Titanic
+
+```{r}
+library(titanic)    # loads titanic_train data frame
+library(caret)
+library(tidyverse)
+library(rpart)
+
+# 3 significant digits
+options(digits = 3)
+
+# clean the data - `titanic_train` is loaded with the titanic package
+titanic_clean <- titanic_train %>%
+    mutate(Survived = factor(Survived),
+           Embarked = factor(Embarked),
+           Age = ifelse(is.na(Age), median(Age, na.rm = TRUE), Age), # NA age to median age
+           FamilySize = SibSp + Parch + 1) %>%    # count family members
+    select(Survived,  Sex, Pclass, Age, Fare, SibSp, Parch, FamilySize, Embarked)
+```
+
+#fte theme
+```{r fte theme}
+library(RColorBrewer)
+fte_theme <- function() {
+  
+  # Generate the colors for the chart procedurally with RColorBrewer
+  palette <- brewer.pal("Greys", n=9)
+  color.background = palette[2]
+  color.grid.major = palette[3]
+  color.axis.text = palette[6]
+  color.axis.title = palette[7]
+  color.title = palette[9]
+  
+  # Begin construction of chart
+  theme_bw(base_size=9) +
+    
+  # Set the entire chart region to a light gray color
+  theme(panel.background=element_rect(fill=color.background, color=color.background)) +
+  theme(plot.background=element_rect(fill=color.background, color=color.background)) +
+  theme(panel.border=element_rect(color=color.background)) +
+  
+  # Format the grid
+  theme(panel.grid.major=element_line(color=color.grid.major,size=.25)) +
+  theme(panel.grid.minor=element_blank()) +
+  theme(axis.ticks=element_blank()) +
+  
+  # Format the legend, but hide by default
+  theme(legend.background = element_rect(fill=color.background)) +
+  theme(legend.text = element_text(size=7,color=color.axis.title)) +
+  
+  # Set title and axis labels, and format these and tick marks
+  theme(plot.title=element_text(color=color.title, size=12, vjust=0)) +
+  theme(axis.text.x=element_text(size=7,color=color.axis.text)) +
+  theme(axis.text.y=element_text(size=7,color=color.axis.text)) +
+  theme(axis.title.x=element_text(size=8,color=color.axis.title, vjust=0)) +
+  theme(axis.title.y=element_text(size=8,color=color.axis.title, vjust=1.25)) +
+  
+  # Plot margins
+  theme(plot.margin = unit(c(0.35, 0.2, 0.3, 0.35), "cm"))
+}
+```
+
+Spliting the titanic clean into test and train sets based on the survived passengers
+```{r}
+set.seed(42, sample.kind = "Rounding")
+index <- with(titanic_clean, createDataPartition(Survived, times = 1, p = 0.2, list = F))  
+
+train_set <- titanic_clean[-index, ]
+test_set <- titanic_clean[index,]
+
+str(train_set)
+str(test_set)
+
+#nrow(train_set)
+#nrow(test_set)
+```
+
+
+Proportion of *survived* individuals in the train set
+
+```{r}
+mean(train_set$Survived == 1)
+```
+
+
+Randomly guessing the survivals 
+
+```{r}
+set.seed(3, sample.kind = "Rounding")
+B <- nrow(test_set)
+surv_test <- sample(c(0, 1), B, replace = T)
+mean(surv_test == test_set$Survived)
+```
+
+Now, lets look at the proportion of survivals by sex.
+
+```{r}
+train_set %>% group_by(Sex) %>% summarise(Prob_Survival = mean(Survived == 1))
+```
+
+Using this insight to apply a random guess in the test set to see the accuracy of the sex-based prediction
+
+```{r}
+sex_model <- ifelse(test_set$Sex == "female", 1, 0)    # predict Survived=1 if female, 0 if male
+mean(sex_model == test_set$Survived)    # calculate accuracy
+```
+
+```{r}
+ggplot(data=subset(train_set, Sex=='female'), aes(Age, fill = Survived, colour = Survived)) + 
+  geom_histogram(binwidth=5,alpha = 0.9)+
+  labs(x="Age [yrs]", y="# of Passengers",
+       title="Survival of female Passengers by Age")+
+  fte_theme()
+```
+Predicting survival by passenger class
+```{r}
+train_set %>%
+    group_by(Pclass) %>%
+    summarize(Survived = mean(Survived == 1))
+```
+Predicting survival by passenger class
+
+```{r}
+class_model <- ifelse(test_set$Pclass == 1, 1, 0)    # predict survival only if first class
+mean(class_model == test_set$Survived)    # calculate accuracy
+```
+Grouping passengers by both sex and passenger class
+
+```{r}
+train_set %>% group_by(Sex, Pclass) %>% summarise(Prob_Survival = mean(Survived == 1)) %>% filter(Prob_Survival > 0.5)
+```
+Predict survival using both sex and passenger class on the test set. Predict survival if the survival rate for a sex/class combination is over 0.5, otherwise predict death.
+
+```{r}
+class_sex_model <- ifelse((test_set$Pclass == 1 & 
+                            test_set$Sex == "female") |
+                            (test_set$Pclass == 2 & 
+                            test_set$Sex == "female") , 1, 0)    # predict survival only if first class and female
+
+# sex_class_model <- ifelse(test_set$Sex == "female" & test_set$Pclass != 3, 1, 0)  ANOTHER APPROACH
+
+mean(class_sex_model == test_set$Survived)    # calculate accuracy
+
+test_set %>% group_by(Sex, Pclass) %>% summarise(Prob_Survival = mean(Survived == 1))
+```
+*Confusion matrix*
+- Creating a confusion matrices for the sex model, class model, and combined sex and class model.
+
+```{r Confusion Matrix}
+# It need to convert predictions and survival status to factors to use this function
+
+sex_model_factor <- as.factor(sex_model)
+sex_model_table <- table(sex_model_factor, test_set$Survived)
+confusionMatrix(sex_model_table)
+
+class_model_factor <- as.factor(class_model)
+class_model_table <- table(class_model_factor, test_set$Survived)
+confusionMatrix(class_model_table)
+
+class_sex_model_factor <- as.factor(class_sex_model)
+class_sex_model_table <- table(class_sex_model_factor, test_set$Survived)
+confusionMatrix(class_sex_model_table)
+```
+
+*F1 scores*
+𝐹1  scores for the sex model, class model, and combined sex and class model.
+```{r F1 score}
+F_meas(sex_model_table)
+F_meas(class_model_table)
+F_meas(class_sex_model_table)
+```
+
+*Survival by fare - LDA and QDA*
+Now we will train a model using linear discriminant analysis (LDA) and quadratic discriminant analysis (QDA) with the caret lad and qda methods, respectively. Let's use the fare as the only predictor.
+```{r lda&qda}
+#LDA fit
+lda_fit <-train(Survived ~ Fare,
+                data = train_set,
+                method = 'lda')
+predictors(lda_fit)
+lda_fit$results$Accuracy
+#Testing the prediction on test set
+y_hat_lda <- predict(lda_fit, test_set, type = "raw")
+#Overall model accuracy
+confusionMatrix(y_hat_lda, test_set$Survived)$overall[["Accuracy"]]
+
+
+#QDA fit
+qda_fit <-train(Survived ~ Fare,
+                data = train_set,
+                method = 'qda')
+predictors(qda_fit)
+qda_fit$results$Accuracy
+#Testing the prediction on test set
+y_hat_qda <- predict(qda_fit, test_set, type = "raw")
+#Overall model accuracy
+confusionMatrix(y_hat_qda, test_set$Survived)$overall[["Accuracy"]]
+
+```
+*Logistic regression models*
+Using a logistic regression model with the caret glm method and age as the only predictor
+```{r}
+glm_fit <- train(Survived ~ Age,
+                 method = "glm",
+                 data = train_set) 
+predictors(glm_fit)
+glm_fit$results$Accuracy
+#Testing the prediction on test set
+y_hat_glm <- predict(glm_fit, test_set, type = "raw")
+#Overall model accuracy
+confusionMatrix(y_hat_glm, test_set$Survived)$overall[["Accuracy"]]
+
+```
+
+Now, using four predictors: sex, class, fare, and age.
+```{r}
+str(train_set)
+glm_fit4 <- train(Survived ~ Age + Sex + Pclass + Fare,
+                 method = "glm",
+                 data = train_set) 
+predictors(glm_fit4)
+glm_fit$results$Accuracy
+#Testing the prediction on test set
+y_hat_glm4 <- predict(glm_fit4, test_set, type = "raw")
+#Overall model accuracy
+confusionMatrix(y_hat_glm4, test_set$Survived)$overall[["Accuracy"]]
+```
+Now, using all the predictors
+```{r}
+glm_fit_all <- train(Survived ~ .,
+                 method = "glm",
+                 data = train_set) 
+predictors(glm_fit_all)
+glm_fit_all$results$Accuracy
+#Testing the prediction on test set     
+y_hat_glm_all <- predict(glm_fit_all, test_set, type = "raw")
+#Overall model accuracy
+confusionMatrix(y_hat_glm_all, test_set$Survived)$overall[["Accuracy"]]
+```
+*kNN model*
+Training a kNN model on the training set using caret
+```{r}
+set.seed(6, sample.kind = "Rounding")
+fit_knn <- train(Survived ~ .,
+                 method = 'knn',
+                 tuneGrid = data.frame(k = seq(3, 51, 2)),
+                 data = train_set)
+ggplot(fit_knn, highlight = T)
+```
+Accuracy of kNN on the test set
+```{r}
+#Testing the prediction on test set     
+y_hat_knn_all <- predict(fit_knn, test_set, type = "raw")
+#Overall model accuracy
+confusionMatrix(y_hat_knn_all, test_set$Survived)$overall[["Accuracy"]]
+```
+*Cross-validation with kNN*
+A new kNN model that instead of the default training control, use 10-fold cross-validation where each partition consists of 10% of the total.
+```{r}
+set.seed(8, sample.kind = "Rounding")
+fit_knn_cv <- train(Survived ~ .,
+                 method = 'knn',
+                 tuneGrid = data.frame(k = seq(3, 51, 2)),
+                 tuneLength = 10,
+                 trControl = trainControl(method = "cv", 
+                                          number = 10,
+                                          p = .9), #p the proportion of                                                       data leaved out
+                 data = train_set)
+ggplot(fit_knn_cv, highlight = T)
+```
+
+```{r}
+#Testing the prediction on test set     
+y_hat_knn_cv <- predict(fit_knn_cv, test_set, type = "raw")
+#Overall model accuracy
+confusionMatrix(y_hat_knn_cv, test_set$Survived)$overall[["Accuracy"]]
+
+```
+*Classification tree model*
+Let's use caret to train a decision tree with the rpart method, tuning the complexity parameter cp
+```{r}
+#tree model
+set.seed(10, sample.kind = "Rounding")
+fit_rpart <- train(Survived ~ . ,
+                   method = 'rpart',
+                   tuneGrid = data.frame(cp = seq(0, 0.05, 0.002)),
+                   data = train_set)
+ggplot(fit_rpart, highlight = T)
+```
+
+```{r}
+#Optimal value
+fit_rpart$bestTune
+#Testing the prediction on test set     
+y_hat_rpart <- predict(fit_rpart, test_set, type = "raw")
+#Overall model accuracy
+confusionMatrix(y_hat_rpart, test_set$Survived)$overall[["Accuracy"]]
+
+
+```
+Inspecting the final model for the tree fit
+```{r}
+fit_rpart$finalModel
+```
+
+```{r}
+plot(fit_rpart$finalModel, margin = 0.2)
+text(fit_rpart$finalModel)
+```
+```{r}
+library(rattle)
+fancyRpartPlot(fit_rpart$finalModel)
+```
+
+*Random forest model*
+Use the caret train function with the rf method to train a random forest. Test values of mtry ranging from 1 to 7. Set ntree to 100
+```{r}
+set.seed(14, sample.kind = "Rounding")
+fit_rf <- train(Survived ~ . ,
+                   method = 'rf',
+                   tuneGrid = data.frame(mtry = seq(1, 7)),
+                   ntree = 100,
+                   data = train_set)
+ggplot(fit_rf, highlight = T)
+```
+```{r}
+#Optimal value
+fit_rf$bestTune
+#Testing the prediction on test set     
+y_hat_rf <- predict(fit_rf, test_set, type = "raw")
+#Overall model accuracy
+confusionMatrix(y_hat_rf, test_set$Survived)$overall[["Accuracy"]]
+```
+Most important variable
+```{r}
+varImp(fit_rf)
+```
+```{r}
+plot(fit_rf$finalModel)
+```
+
+
